@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from PySide2.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
-import FreeCAD
-if FreeCAD.GuiUp:
-    import FreeCADGui as Gui
+#import FreeCAD
+#if FreeCAD.GuiUp:
+#    import FreeCADGui as Gui
 
 import etabs_obj
 
@@ -12,7 +12,7 @@ import etabs_obj
 def open_browse(
         ext: str = '.EDB',
         ):
-    from PySide2.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QFileDialog
     filters = f"{ext[1:]} (*{ext})"
     filename, _ = QFileDialog.getOpenFileName(None, 'select file',
                                             None, filters)
@@ -89,18 +89,18 @@ def find_etabs(
 
 def get_mdiarea():
     """ Return FreeCAD MdiArea. """
-    import PySide2
+    import PySide6
     mw = Gui.getMainWindow()
     if not mw:
         return None
     childs = mw.children()
     for c in childs:
-        if isinstance(c, PySide2.QtWidgets.QMdiArea):
+        if isinstance(c, PySide6.QtWidgets.QMdiArea):
             return c
     return None
 
 def get3dview():
-    from PySide2 import QtWidgets
+    from PySide6 import QtWidgets
     mw = Gui.getMainWindow()
     childs=mw.findChildren(QtWidgets.QMainWindow)
     for i in childs:
