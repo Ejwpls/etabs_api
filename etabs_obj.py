@@ -25,8 +25,8 @@ from material import Material
 from area import Area
 from design import Design
 from prop_frame import PropFrame
-from diaphragm import Diaphragm
-from func import Func
+#from diaphragm import Diaphragm
+#from func import Func
 
 __all__ = ['EtabsModel']
 

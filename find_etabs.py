@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from PySide2.QtWidgets import QMessageBox
+#from PySide2.QtWidgets import QMessageBox
 
-import FreeCAD
-if FreeCAD.GuiUp:
-    import FreeCADGui as Gui
+#import FreeCAD
+#if FreeCAD.GuiUp:
+#    import FreeCADGui as Gui
 
 import etabs_obj
 
