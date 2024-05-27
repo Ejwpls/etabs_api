@@ -1,6 +1,9 @@
 from pathlib import Path
 import sys
 from typing import Iterable, Union
+import copy
+
+from numpy import int16
 
 import pandas as pd
 pd.options.mode.chained_assignment = None
@@ -75,11 +78,18 @@ class DatabaseTables:
         data = list(df.values.reshape(1, df.size)[0])
         return fields, data
 
-    def apply_data(self,
+    def write(self,
             table_key : str,
             data : Union[list, pd.core.frame.DataFrame],
             fields : Union[list, tuple, bool] = None,
             ) -> None:
+        self.apply_data(table_key, data, fields)
+        
+    def apply_data(self,
+            table_key : str,
+            data : Union[list, pd.core.frame.DataFrame],
+            fields : Union[list, tuple, bool] = None,
+            ) -> tuple:
         if type(data) == pd.core.frame.DataFrame:
             if fields is None:
                 fields, data = self.get_fields_and_data_from_dataframe(data)
@@ -89,8 +99,8 @@ class DatabaseTables:
                 else:
                     return False
         self.SapModel.DatabaseTables.SetTableForEditingArray(table_key, 0, fields, 0, data)
-        self.apply_table()
-        return True
+        NumFatalErrors, ret = self.apply_table()
+        return True, NumFatalErrors, ret
 
     def apply_table(self):
         if self.SapModel.GetModelIsLocked():
@@ -126,34 +136,22 @@ class DatabaseTables:
                 del df[col]
 
     def write_seismic_user_coefficient(self, TableKey, FieldsKeysIncluded, TableData):
-        FieldsKeysIncluded1 = ['Name', 'Is Auto Load', 'X Dir?', 'X Dir Plus Ecc?', 'X Dir Minus Ecc?',
-                            'Y Dir?', 'Y Dir Plus Ecc?', 'Y Dir Minus Ecc?',
-                            'Ecc Ratio', 'Top Story', 'Bottom Story',
-                            ]
-        if len(FieldsKeysIncluded) == len(FieldsKeysIncluded1) + 2:
-            FieldsKeysIncluded1.extend(['C', 'K'])
-        else:
-            FieldsKeysIncluded1.extend(['Ecc Overwrite Story', 'Ecc Overwrite Diaphragm',
-            'Ecc Overwrite Length', 'C', 'K'])
-        assert len(FieldsKeysIncluded) == len(FieldsKeysIncluded1)
-        self.SapModel.DatabaseTables.SetTableForEditingArray(TableKey, 0, FieldsKeysIncluded1, 0, TableData)
-        NumFatalErrors, ret = self.apply_table()
-        return NumFatalErrors, ret
+        df = self.reshape_data_to_df(FieldsKeysIncluded, TableData)
+        ret = self.write_seismic_user_coefficient_df(df)
+        return ret
     
     def write_seismic_user_coefficient_df(self, 
             df,
             loads_type : dict = {},
             ):
-        new_columns = ['Name', 'Is Auto Load', 'X Dir?', 'X Dir Plus Ecc?', 'X Dir Minus Ecc?',
-                            'Y Dir?', 'Y Dir Plus Ecc?', 'Y Dir Minus Ecc?',
-                            'Ecc Ratio', 'Top Story', 'Bottom Story',
-                            ]
-        if len(df.columns) == len(new_columns) + 2:
-            new_columns.extend(['C', 'K'])
-        else:
-            new_columns.extend(['Ecc Overwrite Story', 'Ecc Overwrite Diaphragm',
-            'Ecc Overwrite Length', 'C', 'K'])
-        assert len(df.columns) == len(new_columns)
+        if self.etabs.etabs_main_version < 20:
+            new_columns = copy.deepcopy(self.etabs.auto_seismic_user_coefficient_columns_part1)
+            if len(df.columns) == len(new_columns) + 2:
+                new_columns.extend(['C', 'K'])
+            else:
+                new_columns.extend(self.etabs.auto_seismic_user_coefficient_columns_part2 + ['C', 'K'])
+            assert len(df.columns) == len(new_columns)
+            df.columns = new_columns
         # create new load patterns
         x, y = self.etabs.load_patterns.get_load_patterns_in_XYdirection()
         current_names = x.union(y)
@@ -162,9 +160,9 @@ class DatabaseTables:
                 load_type = loads_type.get(name, 5)
                 self.SapModel.LoadPatterns.Add(name, load_type, 0, True)
                 current_names.add(name)
-        df.columns = new_columns
         table_key = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
-        self.apply_data(table_key, df)
+        ret = self.apply_data(table_key, df)
+        return ret[1:]
 
     def expand_seismic_load_patterns(self,
         equal_names : dict = {
@@ -215,7 +213,7 @@ class DatabaseTables:
         converted_loads = dict.fromkeys(multi_load_names)
         for i, row in df.loc[filt_multi].iterrows():
             name = row['Name']
-            load_type = 37 if name in drift_load_names else 5
+            load_type = self.etabs.seismic_drift_load_type if name in drift_load_names else 5
             for col in cols:
                 if row[col] == 1:
                     if all((
@@ -446,7 +444,7 @@ class DatabaseTables:
         # fields = ('Name', 'Exclude Group', 'Mass Source', 'Stiffness Type', 'Load Type', 'Load Name', 'Load SF', 'Design Type', 'User Design Type')
         # df = df[['Name', 'Group', 'MassSource', 'StiffType', 'LoadType', 'LoadName', 'LoadSF', 'DesignType', 'UserDesType']]
         ret = self.apply_data(table_key, df, etabs_fields)
-        if not ret:
+        if not ret[0]:
             all_loadcases = list(df['Name'].unique())
             for loadcase in all_loadcases:
                 temp_df = df.loc[df['Name'] == loadcase]
@@ -463,7 +461,7 @@ class DatabaseTables:
         fields = ('Name', 'Type', 'Is Auto', 'Load Name', 'SF', 'Notes')
         df = df[['Name', 'Type', 'IsAuto', 'LoadName', 'SF', 'Notes']]
         ret = self.apply_data(table_key, df, fields)
-        if not ret:
+        if not ret[0]:
             all_loadcases = self.etabs.load_cases.get_load_cases()
             for _, row in df.iterrows():
                 name = row['Name']
@@ -557,15 +555,18 @@ class DatabaseTables:
         return story_mass
 
     def write_aj_user_coefficient(self, table_key, input_df, df):
-        if len(df) == 0: return
-        FieldsKeysIncluded1 = ['Name', 'Is Auto Load', 'X Dir?', 'X Dir Plus Ecc?', 'X Dir Minus Ecc?',
-                            'Y Dir?', 'Y Dir Plus Ecc?', 'Y Dir Minus Ecc?',
-                            'Ecc Ratio', 'Top Story', 'Bot Story', 'Ecc Overwrite Story',
-                            'Ecc Overwrite Diaphragm', 'Ecc Overwrite Length', 'C', 'K'
-                            ]
+        if len(df) == 0:
+            return
+        import copy
+        fields_keys_included1 = copy.deepcopy(
+            self.etabs.auto_seismic_user_coefficient_columns_part1 + 
+            self.etabs.auto_seismic_user_coefficient_columns_part2 +
+            ['C', 'K'], 
+            )
+        
         extra_fields = ('OverStory', 'OverDiaph', 'OverEcc')
-        if input_df.shape[1] < len(FieldsKeysIncluded1):
-            i_ecc_ow_story = FieldsKeysIncluded1.index('Ecc Overwrite Story')
+        if input_df.shape[1] < len(fields_keys_included1):
+            i_ecc_ow_story = fields_keys_included1.index(self.etabs.ecc_overwrite_story)
             indexes = range(i_ecc_ow_story, i_ecc_ow_story + 3)
             for i, header in zip(indexes, extra_fields):
                 input_df.insert(i, header, None)
@@ -599,7 +600,7 @@ class DatabaseTables:
         # input_df = input_df.append(pd.DataFrame.from_records(additional_rows, columns=FieldsKeysIncluded1))
         for row in additional_rows:
             input_df = input_df.append(row)
-        self.apply_data(table_key, input_df, FieldsKeysIncluded1)
+        self.apply_data(table_key, input_df, fields_keys_included1)
     
     
     def write_daynamic_aj_user_coefficient(self, df=None):
@@ -658,7 +659,8 @@ class DatabaseTables:
                         additional_rows.append(new_row)
         for row in additional_rows:
             df1 = df1.append(row)
-        df1 = df1.rename(col_map, axis=1)
+        if self.etabs.etabs_main_version  < 20:
+            df1 = df1.rename(col_map, axis=1)
         self.SapModel.SetModelIsLocked(False)
         self.apply_data(table_key, df1)
 
@@ -759,6 +761,7 @@ class DatabaseTables:
                     ):
         if not loadcases:
             loadcases = self.etabs.load_patterns.get_ex_ey_earthquake_name()
+        self.etabs.run_analysis()
         # assert len(loadcases) == 2
         self.etabs.set_current_unit('kgf', 'm')
         self.etabs.load_cases.select_load_cases(loadcases)
@@ -785,6 +788,16 @@ class DatabaseTables:
         self.SapModel.DatabaseTables.SetLoadCasesSelectedForDisplay('')
         self.SapModel.DatabaseTables.SetLoadCombinationsSelectedForDisplay(load_combinations)
         return type_combos
+    
+    def select_load_cases_combinations(self,
+                                       load_cases: list=[],
+                                       load_combinations: list=[],
+            ):
+        self.etabs.run_analysis()
+        self.SapModel.DatabaseTables.SetLoadCasesSelectedForDisplay([])
+        self.SapModel.DatabaseTables.SetLoadCombinationsSelectedForDisplay([])
+        self.SapModel.DatabaseTables.SetLoadCasesSelectedForDisplay(load_cases)
+        self.SapModel.DatabaseTables.SetLoadCombinationsSelectedForDisplay(load_combinations)
 
     def get_beams_forces(self,
                         load_combinations : list = None,
@@ -852,6 +865,8 @@ class DatabaseTables:
         df = self.read(table_key, to_dataframe=True)
         if df is None:
             return None
+        if type_ == 'steel':
+            df = df[df['DesignType'] == 'Steel Frame']
         return list(df['ComboName'])
 
     def create_section_cuts(self,
@@ -879,6 +894,7 @@ class DatabaseTables:
 
     def get_section_cuts_angle(self):
         df1 = self.get_section_cuts(cols=['Name', 'RotAboutZ'])
+        df1['RotAboutZ'] = df1['RotAboutZ'].astype(int16)
         re_dict = df1.set_index('Name').to_dict()['RotAboutZ']
         return re_dict
 
@@ -898,7 +914,7 @@ class DatabaseTables:
         return df
 
     def get_joint_design_reactions(self,
-        types : list = ['concrete'],
+        types : list = ['concrete', 'steel'],
         select_combos : bool = True,
         ):
         if select_combos:
@@ -921,6 +937,7 @@ class DatabaseTables:
     def get_all_joint_design_reactions(self,
         select_combos : bool = True,
         ):
+        self.etabs.run_analysis()
         if select_combos:
             self.etabs.load_combinations.select_load_combinations()
         table_key = 'Joint Design Reactions'
@@ -1036,6 +1053,7 @@ class DatabaseTables:
         '''
         get base points coordinates and related column dimensions
         '''
+        self.etabs.run_analysis()
         if joint_design_reactions_df is None:
             joint_design_reactions_df = self.get_joint_design_reactions()
         df = pd.DataFrame()
@@ -1153,7 +1171,12 @@ class DatabaseTables:
         self.etabs.set_current_unit('kgf', 'mm')
         self.apply_data(table_key, data, fields)
 
-    def get_hight_pressure_columns(self,
+    def get_hight_pressure_columns(self):
+        return self.get_axial_pressure_columns()
+
+
+    def get_axial_pressure_columns(self,
+                                   limit: float= 0.3,
         ):
         self.etabs.set_current_unit('N', 'mm')
         cols = ['Story', 'Column', 'OutputCase', 'UniqueName', 'P']
@@ -1184,12 +1207,177 @@ class DatabaseTables:
         column_forces['fc'] = column_forces.Material.map(d)
         for col in ('t2', 't3', 'fc'):
             column_forces[col] = pd.to_numeric(column_forces[col])
-        column_forces['0.3*Ag*fc'] = 0.3 * column_forces['t2'] * column_forces['t3'] * column_forces['fc']
+        limit_ag_fc = 'limit*Ag*fc'
+        column_forces[limit_ag_fc] = limit * column_forces['t2'] * column_forces['t3'] * column_forces['fc']
         import numpy as np
-        column_forces['high pressure'] = np.where(column_forces['P'] > column_forces['0.3*Ag*fc'], True, False)
-        fields = ('Story', 'Column', 'OutputCase', 'UniqueName', 'P', 'section',  't2', 't3', 'fc', '0.3*Ag*fc', 'high pressure')
-        return column_forces, fields
+        column_forces['Result'] = np.where(column_forces['P'] > column_forces[limit_ag_fc], True, False)
+        fields = ['Story', 'Column', 'OutputCase', 'UniqueName', 'P', 'section',  't2', 't3', 'fc', limit_ag_fc, 'Result']
+        df = column_forces[fields]
+        return df
+    
+    def set_floor_cracking(self,
+        names: Union[list, bool]=None,
+        type_: str='Frame', # 'Area
+        ):
+        table_key = f"{type_} Assignments - Floor Cracking"
+        if names is None:
+            if type_ == 'Frame':
+                names, _ = self.etabs.frame_obj.get_beams_columns()
+            elif type_ == 'Area':
+                names = self.etabs.area.get_names_of_areas_of_type(type_='floor')
+        df = pd.DataFrame(names)
+        df['Consider for Cracking'] = 'Yes'
+        if self.etabs.etabs_main_version < 20:
+            df.columns = ['UniqueName', 'Consider for Cracking']
+        else:
+            df.columns = ['UniqueName', 'Consider']
+        self.write(table_key=table_key, data=df)
 
+    def create_nonlinear_loadcases(self,
+        dead: list,
+        supper_dead: list,
+        lives: list,
+        lives_percentage: float = 0.25,
+        ):
+        if self.etabs.etabs_main_version < 20:
+            load_sf = 'Load SF'
+            load_type = 'Load Type'
+            cracked_option = 'Cracked Option'
+            load_name = 'Load Name'
+        else:
+            load_sf = 'LoadSF'
+            load_type = 'LoadType'
+            cracked_option = 'CrackedOpt'
+            load_name = 'LoadName'
+        cols = ['Name',
+                # 'Mass Source', 'Initial Condition',
+                load_type,
+                load_name,
+                load_sf,
+                # 'Modal Case',
+                cracked_option,
+                # 'Displ Tolerance', 'Max Iterations',
+                ]
+        import pandas as pd
+        df = pd.DataFrame(columns=cols)
+        df[load_name] = (dead + supper_dead + lives) * 2 + dead
+        all_len = len(dead + supper_dead + lives)
+        dead_sd_len = len(dead + supper_dead)
+        # load names
+        dead_name = dead[0]
+        supper_dead_name = ''
+        if supper_dead:
+            supper_dead_name = supper_dead[0] + '+'
+        lc1 = f'{dead_name}+{supper_dead_name}{lives_percentage:.2f}Live'
+        lc2 = f'{dead_name}+{supper_dead_name}Live'
+        lc3 = dead_name + '_NL'
+        df['Name'] = [lc1] * all_len + [lc2] * all_len + [lc3] * len(dead)
+        df[load_sf] = ['1'] * dead_sd_len + [f'{lives_percentage}'] * len(lives) + ['1'] * all_len + ['1'] * len(dead)
+        df[load_type] = 'Load'
+        df[cracked_option] = 'Short Term'
+        # modal_case = self.etabs.load_cases.get_modal_loadcase_name()
+        # df['Mass Source'] = 'Previous'
+        # df['Initial Condition'] = 'Unstressed'
+        # df['Modal Case'] = modal_case
+        # df['Displ Tolerance'] = '.005'
+        # df['Max Iterations'] = '30'
+        table_key = 'Load Case Definitions - Nonlinear Static'
+        print(df)
+        self.write(table_key, df)
+        return lc1, lc2, lc3
+    
+    def add_grid_lines(self,
+                       data: list,
+                       len_unit: str='mm',
+                       ):
+        self.etabs.unlock_model()
+        self.etabs.set_current_unit('N', len_unit)
+        table_key = 'Grid Definitions - Grid Lines'
+        if self.etabs.etabs_main_version > 19:
+            grid_line_type = 'LineType'
+            bubble_location = 'BubbleLoc'
+        else:
+            grid_line_type = 'Grid Line Type'
+            bubble_location = 'Bubble Location'
+        fields = ['Name', grid_line_type, 'ID', 'Ordinate', bubble_location, 'Visible']
+        self.etabs.database.apply_data(table_key, data, fields)
+
+    def set_cracking_analysis_option(self,
+        min_tension_ratio: float= .0018,
+        min_compression_ratio: float=0,
+        ):
+        assert min_tension_ratio < 1
+        assert min_compression_ratio < 1
+        table_key = 'Analysis Options - Cracking Analysis Options'
+        df = self.etabs.database.read(table_key, to_dataframe=True)
+        df.iloc[0] = ['User and Designed', str(min_tension_ratio), str(min_compression_ratio)]
+        if self.etabs.etabs_main_version < 20:
+            df.columns = ['Reinforcement Source', 'Minimum Tension Ratio', 'Minimum Compression Ratio']
+        self.etabs.database.write(table_key, df)
+    
+    def area_mesh_joints(self,
+            areas: list = [],
+            types: list = ['Floor'],
+            map_dict: dict={},
+            ) -> tuple:
+        '''
+        map_dict: A dictionary for mapping mesh points name to int point name
+        return joint numbers of 3 and 4 elements nodes
+        '''
+        import numpy as np
+        self.etabs.run_analysis()
+        table_key = 'Objects and Elements - Areas'
+        df = self.read(table_key=table_key, to_dataframe=True)
+        if types:
+            df = df[df['ObjType'].isin(types)]
+        if areas:
+            df = df[df['ObjName'].isin(areas)]
+        # get unique joints values
+        un = pd.unique(df[['ElmJt1', 'ElmJt2', 'ElmJt3', 'ElmJt4']].values.ravel('K'))
+        un = un[un != np.array(None)]
+        if map_dict:
+            df['ElmName'] = range(1, len(df) + 1)
+            df['ElmName'] = df['ElmName'].astype(int)
+            for col in ('ElmJt1', 'ElmJt2', 'ElmJt3', 'ElmJt4'):
+                df[col] = df[col].map(map_dict).fillna(df[col])
+            for col in ('ElmJt1', 'ElmJt2', 'ElmJt3'):
+                df[col] = df[col].astype(int)
+        filt = df.ElmJt4.isnull()
+        df3 = df[filt]
+        df4 = df[~filt]
+        if map_dict:
+            df4['ElmJt4'] = df4['ElmJt4'].astype(int)
+        d3 = {}
+        d4 = {}
+        if not df3.empty:
+            d3 = df3.groupby('ObjName').apply(
+                lambda x: dict(zip(x['ElmName'], zip(x['ElmJt1'], x['ElmJt2'], x['ElmJt3'])))).to_dict()
+        if not df4.empty:
+            d4 = df4.groupby('ObjName').apply(
+                lambda x: dict(zip(x['ElmName'], zip(x['ElmJt1'], x['ElmJt2'], x['ElmJt3'], x['ElmJt4'])))).to_dict()
+        return d3, d4, un
+
+    def get_map_mesh_points(self,
+            shell_names: list = [],
+            start_value: int=0,
+            ) -> tuple:
+        '''
+        start_value: the numbers that point numbers starts from it
+        return joint numbers of 3 and 4 elements nodes
+        '''
+        self.etabs.run_analysis()
+        table_key = 'Objects and Elements - Joints'
+        df = self.read(table_key=table_key, to_dataframe=True)
+        df = df[df['ObjType'] == 'Shell']
+        if shell_names:
+            df = df[df['ObjName'].isin(shell_names)]
+        unique_values = df['ElmName'].unique()
+        if start_value == 0:
+            start_value = self.etabs.points.get_maximum_point_number_in_model()
+        maped_points = {point_id: i for i, point_id in enumerate(unique_values, start=start_value + 1)}
+        return maped_points
+
+        
 
 
 if __name__ == '__main__':

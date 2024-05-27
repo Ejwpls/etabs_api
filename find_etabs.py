@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from PySide6.QtWidgets import QMessageBox
+from PySide2.QtWidgets import QMessageBox
 
-#import FreeCAD
-#if FreeCAD.GuiUp:
-#    import FreeCADGui as Gui
+import FreeCAD
+if FreeCAD.GuiUp:
+    import FreeCADGui as Gui
 
 import etabs_obj
 
@@ -12,7 +12,7 @@ import etabs_obj
 def open_browse(
         ext: str = '.EDB',
         ):
-    from PySide6.QtWidgets import QFileDialog
+    from PySide2.QtWidgets import QFileDialog
     filters = f"{ext[1:]} (*{ext})"
     filename, _ = QFileDialog.getOpenFileName(None, 'select file',
                                             None, filters)
@@ -27,6 +27,7 @@ def find_etabs(
     backup=False,
     filename=None,
     show_warning: bool = True,
+    software: str='etabs',
     ):
     '''
     try to find etabs in this manner:
@@ -38,19 +39,19 @@ def find_etabs(
     '''
 
     # try to connect to opening etabs software
-    etabs = etabs_obj.EtabsModel(backup=backup)
+    etabs = etabs_obj.EtabsModel(backup=backup, software=software)
 
     # if not etabs.success:
     #     pass
     if etabs.success:
         filename_path = etabs.get_filename()
-        if filename_path.exists():
+        if filename_path and filename_path.exists():
             filename = str(filename_path)
     elif show_warning:
         QMessageBox.warning(
         None,
-        'ETABS',
-        'Please Open ETABS Software. If ETABS is now open, try register etabs first.'
+        software,
+        f'Please Open {software} Software. If {software} is now open, try register etabs first.'
         )
     if (
         filename is None and
@@ -59,7 +60,7 @@ def find_etabs(
         ):
         filename = open_browse()
     if filename is None and etabs.success and show_warning:
-        QMessageBox.warning(None, 'ETABS', 'Please Open ETABS Model and Run this command again.')
+        QMessageBox.warning(None, software, f'Please Open {software} Model and Run this command again.')
     elif (
         hasattr(etabs, 'success') and
         etabs.success and
@@ -76,10 +77,10 @@ def find_etabs(
         ):
         QMessageBox.information(
             None,
-            'Run ETABS Model',
+            f'Run {software} Model',
             'Model did not run and needs to be run. It takes some times.')
         progressbar = FreeCAD.Base.ProgressIndicator()
-        progressbar.start("Run ETABS Model ... ", 2)
+        progressbar.start(f"Run {software} Model ... ", 2)
         progressbar.next(True)
         etabs.run_analysis()
         progressbar.stop()
@@ -89,18 +90,18 @@ def find_etabs(
 
 def get_mdiarea():
     """ Return FreeCAD MdiArea. """
-    import PySide6
+    import PySide2
     mw = Gui.getMainWindow()
     if not mw:
         return None
     childs = mw.children()
     for c in childs:
-        if isinstance(c, PySide6.QtWidgets.QMdiArea):
+        if isinstance(c, PySide2.QtWidgets.QMdiArea):
             return c
     return None
 
 def get3dview():
-    from PySide6 import QtWidgets
+    from PySide2 import QtWidgets
     mw = Gui.getMainWindow()
     childs=mw.findChildren(QtWidgets.QMainWindow)
     for i in childs:
@@ -116,4 +117,3 @@ def show_win(win, in_mdi=True):
         if in_mdi:
             mdi.addSubWindow(win.form)
         win.form.exec_()
-
