@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Iterable, Union
 
+import numpy as np
+
 
 __all__ = ['Safe', 'CreateF2kFile']
 
@@ -231,7 +233,7 @@ class CreateF2kFile(Safe):
         cols = ['Name', 'Type', 'SelfWtMult']
         df = self.etabs.database.read(table_key, to_dataframe=True, cols=cols)
         # remove drift load patterns
-        filt = df['Type'] == 'Seismic (Drift)'
+        filt = df['Type'] == self.etabs.seismic_drift_text
         df = df.loc[~filt]
         # drift_names = df.loc[filt]['Name'].unique()
         df['Type'] = df.Name.apply(get_design_type, args=(self.etabs,))
@@ -342,17 +344,28 @@ class CreateF2kFile(Safe):
         df.drop(columns=['Label', 'CaseType'], inplace=True)
         for col in ('FX', 'FY', 'MX', 'MY', 'MZ'):
             df[col] = -df[col].astype(float)
-        df['xim'] = 'XDim=0'
-        df['yim'] = 'YDim=0'
+        try:
+            df2 = self.etabs.database.get_basepoints_coord_and_dims(df)
+            df2 = df2.set_index('UniqueName')
+            df['xdim'] = df['UniqueName'].map(df2['t2'])
+            df['ydim'] = df['UniqueName'].map(df2['t3'])
+            # Replace None values with 0 in specific columns
+            columns_to_replace = ['xdim', 'ydim']
+            df[columns_to_replace] = df[columns_to_replace].fillna(0)
+        except AttributeError:
+            df['xdim'] = 0
+            df['ydim'] = 0
         d = {
             'UniqueName': 'Point=',
             'OutputCase': 'LoadPat=',
-            'FX' : 'Fx=',
-            'FY' : 'Fy=',
-            'FZ' : 'Fgrav=',
-            'MX' : 'Mx=',
-            'MY' : 'My=',
-            'MZ' : 'Mz=',
+            'FX'  : 'Fx=',
+            'FY'  : 'Fy=',
+            'FZ'  : 'Fgrav=',
+            'MX'  : 'Mx=',
+            'MY'  : 'My=',
+            'MZ'  : 'Mz=',
+            'xdim' : 'XDim=',
+            'ydim' : 'YDim=',
             }
         content = self.add_assign_to_fields_of_dataframe(df, d)
         table_key = "LOAD ASSIGNMENTS - POINT LOADS"
@@ -378,24 +391,28 @@ class CreateF2kFile(Safe):
                 load_combinations_with_dynamic = df['Name'].loc[filt].unique()
                 filt = df['Name'].isin(load_combinations_with_dynamic)
                 df = df.loc[~filt]
-        # design_load_combinations = set()
-        # for type_ in ('concrete', 'steel', 'shearwall', 'slab'):
-        #     load_combos_names = self.etabs.database.get_design_load_combinations(type_)
-        #     if load_combos_names is not None:
-        #         design_load_combinations.update(load_combos_names)
-        # filt = df['Name'].isin(design_load_combinations)
         filt = df['Type'].isin(types)
         df = df.loc[filt]
         if load_combinations is not None:
             filt = df['Name'].isin(tuple(load_combinations))
             df = df.loc[filt]
         df.replace({'Type': {'Linear Add': '"Linear Add"'}}, inplace=True)
+        load_combos_names = self.etabs.database.get_design_load_combinations("concrete")
+        if not load_combos_names:
+            load_combos_names = self.etabs.database.get_design_load_combinations("steel")
+        if not load_combos_names:
+            load_combos_names = self.etabs.database.get_design_load_combinations("shearwall")
+        if load_combos_names:
+            df['strength'] = np.where(df['Name'].isin(load_combos_names), 'Yes', 'No')
+        else:
+            df['strength'] = 'No'
 
         d = {
             'Name': 'Combo=',
             'LoadName': 'Load=',
             'Type' : 'Type=',
             'SF' : 'SF=',
+            'strength' : 'DSStrength=',
             }
         content = self.add_assign_to_fields_of_dataframe(df, d)
         table_key = "LOAD COMBINATIONS"
@@ -456,4 +473,3 @@ def get_design_type(case_name, etabs):
     type_num = etabs.SapModel.LoadCases.GetTypeOAPI_1(case_name)[2]
     design_type = map_dict.get(type_num, 'OTHER')
     return design_type
-

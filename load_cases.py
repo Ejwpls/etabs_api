@@ -1,4 +1,4 @@
-from typing import Iterable, Tuple, Union
+from typing import Iterable, Tuple, Union, List
 
 from numpy import int16
 
@@ -13,7 +13,7 @@ class LoadCases:
 
     def get_load_cases(self):
         load_case_names = self.SapModel.LoadCases.GetNameList(0, [])[1]
-        return load_case_names
+        return [text for text in load_case_names if not text.startswith('~')]
 
     def select_all_load_cases(self):
         load_case_names = self.get_load_cases()
@@ -23,6 +23,16 @@ class LoadCases:
     def select_load_cases(self, names):
         self.SapModel.DatabaseTables.SetLoadCombinationsSelectedForDisplay('')
         self.SapModel.DatabaseTables.SetLoadCasesSelectedForDisplay(names)
+
+    def add_response_spectrum_loadcases(self,
+                                       names: List[str],
+                                       eccentricity: float=0.05,
+                                       ):
+        for name in names:
+            self.etabs.SapModel.LoadCases.ResponseSpectrum.SetCase(name)
+            if eccentricity > 0:
+                self.etabs.SapModel.LoadCases.ResponseSpectrum.SetEccentricity(name, eccentricity) 
+        
 
     def get_loadcase_withtype(self, n) -> list:
         '''
@@ -89,6 +99,35 @@ class LoadCases:
                     elif float(angles[0]) == 0:
                         y_names.append(name)
         return x_names, y_names
+    
+    def get_response_spectrum_sxye_loadcases_names(self):
+        sx = set()
+        sy = set()
+        sxe = set()
+        sye = set()
+        table_key = 'Load Case Definitions - Response Spectrum'
+        df = self.etabs.database.read(table_key, to_dataframe=True)
+        if df is not None:
+            df['EccenRatio'] = df['EccenRatio'].astype(float)
+            filt_not_ecc = df['EccenRatio'] == 0
+            ecc_names = set(df.loc[~filt_not_ecc].Name)
+            for name in df.Name.unique():
+                try:
+                    n, dirs, _, _, _, angles, _ = self.SapModel.LoadCases.ResponseSpectrum.GetLoads(name)
+                except:
+                    continue
+                if n == 1:
+                    if (dirs[0] == 'U1' and float(angles[0]) == 0) or (dirs[0] == 'U2' and float(angles[0]) == 90):
+                        if name in ecc_names:
+                            sxe.add(name)
+                        else:
+                            sx.add(name)
+                    elif (dirs[0] == 'U2' and float(angles[0]) == 0) or (dirs[0] == 'U1' and float(angles[0]) == 90):
+                        if name in ecc_names:
+                            sye.add(name)
+                        else:
+                            sy.add(name)
+        return sx, sxe, sy, sye
 
     def multiply_response_spectrum_scale_factor(self,
             name : str,
@@ -107,7 +146,7 @@ class LoadCases:
             scales = (ret[3][0] * scale,) + tuple(ret[3][1:])
         ret[3] = scales
         self.SapModel.LoadCases.ResponseSpectrum.SetLoads(name, *ret[:-1])
-        return None
+        return scales
 
     def get_spectral_with_angles(self,
                 angles : Union[Iterable, bool] = None,
@@ -117,21 +156,27 @@ class LoadCases:
         return angles and Response spectrum loadcase
         {0: spec}
         '''
-        table = 'Load Case Definitions - Response Spectrum'
-        df = self.etabs.database.read(table, to_dataframe=True, cols=['Name', 'Angle'])
-        df.dropna(inplace=True)
+        table_key = 'Load Case Definitions - Response Spectrum'
+        df = self.etabs.database.read(table_key, to_dataframe=True)
+        if df is None:
+            return {}
+        df = df.dropna(subset=['Angle'])
         df['Angle'] = df['Angle'].astype(int16)
-        df.drop_duplicates(['Name'], keep=False, inplace=True)
-        if angles is not None:
-            df = df[df['Angle'].isin(angles)]
         if specs is not None:
             df = df[df['Name'].isin(specs)]
-        # df.drop_duplicates(['Angle'], keep='first', inplace=True)
         angles_specs = dict()
-        for _, row in df.iterrows():
-            angle = row['Angle']
-            name = row['Name']
-            angles_specs[int(angle)] = name
+        if df is not None:
+            for name in df.Name.unique():
+                try:
+                    n, dirs, _, _, _, angles, _ = self.SapModel.LoadCases.ResponseSpectrum.GetLoads(name)
+                except:
+                    continue
+                if n == 1:
+                    angle = angles[0]
+                    if dirs[0] == 'U2':
+                        angle = 90 - angle
+                    if angles is None or angle in angles:
+                        angles_specs[angle] = name
         return angles_specs
 
     def reset_scales_for_response_spectrums(self,
@@ -179,7 +224,7 @@ class LoadCases:
             load_case_type = self.SapModel.LoadCases.GetTypeOAPI(lc)[0]
             if load_case_type == 1:  # Static Linear
                 for lp in self.SapModel.LoadCases.StaticLinear.GetLoads(lc)[2]:
-                    if self.SapModel.LoadPatterns.GetLoadType(lp)[0] == 37:  # seismic load pattern
+                    if self.SapModel.LoadPatterns.GetLoadType(lp)[0] == self.etabs.seismic_drift_load_type:  # seismic load pattern
                         seismic_drift_load_cases.append(lc)
                         break
         return seismic_drift_load_cases

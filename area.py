@@ -25,6 +25,35 @@ class Area:
         self.etabs = etabs
         self.SapModel = etabs.SapModel
 
+    def get_names_of_areas_of_type(
+            self,
+            type_='floor',
+            story : Union[str, bool] = None,
+            ):
+        '''
+        type_: wall:1, floor:2
+        '''
+        map_dict = {'wall':1, 'floor':2}
+        type_ = map_dict.get(type_, 5)
+        names = []
+        for name in self.SapModel.AreaObj.GetNameList()[1]:
+            if self.SapModel.AreaObj.GetDesignOrientation(name)[0] == type_:
+                names.append(name)
+        return names
+    
+    def get_slab_names(self,
+        types: list=['Slab', 'Waffle'],
+        ):
+        '''
+        get slab names with type in types
+        '''
+        table_key = "Area Assignments - Section Properties"
+        df = self.etabs.database.read(table_key, to_dataframe=True)
+        if types:
+            filt = df['PropType'].isin(types)
+            df = df.loc[filt]
+        return df['UniqueName']
+
     def export_freecad_slabs(self,
         doc : 'App.Document' = None,
         soil_name : str = 'SOIL',
@@ -155,53 +184,91 @@ class Area:
             name = ret[3]
             self.SapModel.AreaObj.SetOpening(name, True)
 
-    def export_freecad_strips(self, doc : 'App.Document' = None):
-        self.etabs.set_current_unit('kN', 'mm')
+    def export_freecad_strips(self,
+                              doc : 'App.Document' = None,
+                              story: str='',
+                              ):
+        self.etabs.set_current_unit('N', 'mm')
+        z_level = 0
+        if story:
+            z_level = self.SapModel.Story.GetElevation(story)[0]
         if doc is None:
             doc = FreeCAD.ActiveDocument
-        foun = doc.Foundation
         data = []
-        if foun.foundation_type == 'Strip':
-            slabs = foun.tape_slabs
-            i = j = 0
-            for slab in slabs:
-                p1 = slab.start_point
-                p2 = slab.end_point
-                p = self.SapModel.PointObj.AddCartesian(p1.x, p1.y, p1.z)
-                p1_name = p[0]
-                p = self.SapModel.PointObj.AddCartesian(p2.x, p2.y, p2.z)
-                p2_name = p[0]
-                swl = ewl = slab.width.Value / 2 + slab.offset
-                swr = ewr = slab.width.Value / 2 - slab.offset
-                dx = abs(p1.x - p2.x)
-                dy = abs(p1.y - p2.y)
-                if dx > dy:
-                    layer = 'A'
-                    i += 1
-                    name = f'CS{layer}{i}'
-                else:
-                    layer = 'B'
-                    j += 1
-                    name = f'CS{layer}{j}'
-                data.extend((
-                    name,
-                    '1',
-                    f'{p1_name}',
-                    f'{p2_name}',
-                    f'{swl}',
-                    f'{swr}',
-                    f'{ewl}',
-                    f'{ewr}',
-                    'NO',
-                    f'{layer}',
-                    ))
-        table_key = 'Strip Object Connectivity'
-        fields = ['Name', 'NumSegs', 'StartPoint', 'EndPoint', 'WStartLeft',
-            'WStartRight', 'WEndLeft', 'WEndRight', 'AutoWiden', 'Layer']
+        for o in doc.Objects:
+            if hasattr(o, 'Proxy') and \
+                hasattr(o.Proxy, 'Type') and \
+                    o.Proxy.Type == 'Strip':
+                layer = o.layer
+                strip_name = o.Label
+                points = o.Base.Points
+                sl = o.left_width.Value
+                sr = o.right_width.Value
+                swl = ewl = sl
+                swr = ewr = sr
+                placement = o.Placement.Base + o.Base.Placement.Base
+                for j, point in enumerate(points):
+                    if j == 0:
+                        p1 = self.SapModel.PointObj.AddCartesian(
+                            point.x + placement.x,
+                            point.y + placement.y,
+                            z_level,
+                            )
+                        p1_name = p1[0]
+                        p2 = self.SapModel.PointObj.AddCartesian(
+                            points[1].x + placement.x,
+                            points[1].y + placement.y,
+                            z_level,
+                            )
+                        p2_name = p2[0]
+                        data.extend((
+                            strip_name,
+                            f'{p1_name}',
+                            f'{p2_name}',
+                            f'{swl}',
+                            f'{swr}',
+                            f'{ewl}',
+                            f'{ewr}',
+                            'No',
+                            layer,
+                            ))
+                    elif j > 1:
+                        p = self.SapModel.PointObj.AddCartesian(
+                            point.x + placement.x,
+                            point.y + placement.y,
+                            z_level,
+                            )
+                        p_name = p[0]
+                        data.extend((
+                            strip_name,
+                            '',
+                            f'{p_name}',
+                            f'{swl}',
+                            f'{swr}',
+                            f'{ewl}',
+                            f'{ewr}',
+                            '',
+                            '',
+                            ))
+        fields = [
+            'Name',
+            'Strip Start Point',
+            'Segment End Point',
+            'Start Width Left',
+            'Start Width Right',
+            'End Width Left',
+            'End Width Right',
+            'Auto Widen',
+            'Layer',
+        ]
+        df = self.etabs.database.reshape_data_to_df(fields, data)
+        if self.etabs.etabs_main_version > 19:
+            df.columns = ['Name', 'StartPoint', 'EndPoint', 'WStartLeft',
+                        'WStartRight', 'WEndLeft', 'WEndRight', 'AutoWiden', 'Layer']
         if self.etabs.software == 'ETABS':
-            fields.insert(1, 'Story')
-        assert len(fields) == len(data) / len(slabs)
-        self.etabs.database.apply_data(table_key, data, fields)
+            df.insert(loc=1, column='Story', value=story)
+        table_key = 'Strip Object Connectivity'
+        self.etabs.database.write(table_key, df)
 
     def export_freecad_stiff_elements(self, doc : 'App.Document' = None):
         self.etabs.set_current_unit('kN', 'mm')
@@ -271,7 +338,6 @@ class Area:
             )
 
 
-    
     @staticmethod
     def get_vertex_from_point(point):
         return Part.Vertex(point.x, point.y, point.z)
@@ -289,14 +355,16 @@ class Area:
         unit_weights = self.etabs.material.get_unit_weight_of_materials()
         df['UnitWeight'] = df['Material'].map(unit_weights)
         convert_types = {
-            'Depth': float,
-            'Thickness': float,
-            'WidthTop': float,
-            'WidthBot': float,
-            'RibSpacing1': float,
-            'RibSpacing2': float,
-                        'WMod': float,
+            'Depth',
+            'Thickness',
+            'WidthTop',
+            'WidthBot',
+            'RibSpacing1',
+            'RibSpacing2',
+            'WMod',
         }
+        convert_types = convert_types.intersection(df.columns)
+        convert_types = {key: float for key in convert_types}
         df = df.astype(convert_types)
         # flat slabs
         thickness_names = ['Slab', 'Drop', 'Stiff', 'Mat', 'Footing']
@@ -468,12 +536,233 @@ class Area:
                                                     ):
         df = self.get_shell_uniform_loads(df1=df)
         df = df[['UniqueName', 'LoadPattern', 'Direction', 'Load']]
-        df.columns = ['UniqueName', 'Load Pattern', 'Direction', 'Load']
+        if self.etabs.etabs_main_version < 20:
+            df.columns = ['UniqueName', 'Load Pattern', 'Direction', 'Load']
+            df2 = pd.DataFrame(columns=['UniqueName', 'Load Set'])
+        else:
+            df.columns = ['UniqueName', 'LoadPattern', 'Dir', 'Load']
+            df2 = pd.DataFrame(columns=['UniqueName', 'LoadSet'])
         table_key = 'Area Load Assignments - Uniform'
         self.etabs.database.apply_data(table_key, df)
-        df2 = pd.DataFrame(columns=['UniqueName', 'Load Set'])
         self.etabs.database.apply_data('Area Load Assignments - Uniform Load Sets', df2)
         return True
+    
+    def reset_slab_sections_modifiers(self,
+            slabs: list=[],
+            ):
+        if not slabs:
+            slabs = self.get_all_slab_types().keys()
+        for slab in slabs:
+            self.SapModel.PropArea.SetModifiers(slab, 10*[1])
+
+    def assign_slab_modifiers(self,
+            slab_names: list=[],
+            f11: Union[None, float]=None,
+            f22: Union[None, float]=None,
+            f12: Union[None, float]=None,
+            m11: Union[None, float]=None,
+            m22: Union[None, float]=None,
+            m12: Union[None, float]=None,
+            v13: Union[None, float]=None,
+            v23: Union[None, float]=None,
+            mass: Union[None, float]=None,
+            weight: Union[None, float]=None,
+            reset: bool=False,
+            ):
+        '''
+        reset means to set all slab section properties set to 1
+        '''
+        if reset:
+            self.reset_slab_sections_modifiers()
+        if len(slab_names) == 0:
+            slab_names = self.get_slab_names()
+        mod_names = [f11, f22, f12, m11, m22, m12, v13, v23, mass, weight]
+        for name in slab_names:
+            modifiers = list(self.SapModel.AreaObj.GetModifiers(name)[0])
+            for i, mod in enumerate(mod_names):    
+                if mod:
+                    modifiers[i] = mod
+            self.SapModel.AreaObj.SetModifiers(name, modifiers)
+    
+    def save_as_deflection_filename(self,
+                                    slab_name: str,
+                                    filename: str='',
+    ):
+        file_path = self.etabs.get_filepath()
+        deflection_path = file_path / 'deflections'
+        if not deflection_path.exists():
+            import os
+            os.mkdir(str(deflection_path))
+        if not filename:
+            label, story, _ = self.SapModel.AreaObj.GetLabelFromName(slab_name)
+            filename = f'deflection_{label}_{story}.EDB'
+            print(f'Save file as {filename} ...')
+            self.SapModel.File.Save(str(deflection_path / filename))
+
+    def design_slabs(self,
+                    slab_names: list,
+                    s: float,
+                    d: float,
+                    tw: float,
+                    hc: float,
+                    as_top: float,
+                    as_bot: float,
+                    fill: bool=False,
+                    two_way: bool=True,
+                    design: bool=True,
+    ):
+        kwargs = {'slab_names': slab_names,
+                     'f11': 1,
+                     'f22': 1,
+                     'f12': 1,
+                     'm11': 0.25,
+                     'm22': 0.25,
+                     'm12': 0.25,
+                     'v13': 1,
+                     'v23': 1,
+                     'mass': 1,
+                     'weight': 1,
+                     'reset': True,
+        }
+        self.assign_slab_modifiers(**kwargs)
+        rho_top, rho_bot = calculate_rho(s, d, tw, hc, as_top, as_bot, fill=fill, two_way=two_way)
+        self.etabs.database.set_cracking_analysis_option(rho_bot, rho_top)
+        if design:
+            self.etabs.start_slab_design()
+
+    def get_deflection_of_slab(self,
+        dead: list,
+        supper_dead: list,
+        lives: list,
+        slab_name: str,
+        s: float,
+        d: float,
+        tw: float,
+        hc: float,
+        as_top: float,
+        as_bot: float,
+        two_way: bool=True,
+        lives_percentage: float = 0.25,
+        filename: str='',
+        ):
+        '''
+        dead: a list of Dead loads
+        supper_dead: a list of supper Dead loads
+        lives: a list of live loads
+        beam_name: The name of beam for calculating deflection
+        distance_for_calculate_rho: A string or float length for calculating rho, string can be 'middle', 'start' and 'end'
+        location: location for getting rebar area, 'top' and 'bot'
+        torsion_area: area of torsion rebars, if it None, automatically 1/2 of torsion area added to flextural rebar area
+        frame_area: The area of concrete section, when it is None, obtain automatically
+        cover: cover of beam
+        lives_percentage: live load percentage for considering to calculate short term cracking deflection
+        filename: The etabs file name for creating deflection model
+        point_for_get_deflection: The name of the point for calculate deflection on it, if it is None, for console it is 'start'
+                and for contiues beam it is 'middle'
+        is_console: If beam is console
+        rho: As / bd
+        additional_rebars: Add this to rebar area for calculating rho
+        s: Spacing of Ribs that are Parallel to Slab 1-Axis
+        d: Overall Depth
+        tw: Average Stem Width
+        hc: Slab Thickness
+        as_top: Area of top rebars
+        as_bot: Area of bottom rebars
+        fill: calculate rho according to fill slab or not
+        '''
+        text = ''
+        self.save_as_deflection_filename(slab_name=slab_name, filename=filename)
+        self.design_slabs([slab_name], s, d, tw, hc, as_top, as_bot, True, two_way, True)
+        self.etabs.unlock_model()
+        print("Set frame stiffness modifiers ...")
+        beams, columns = self.etabs.frame_obj.get_beams_columns()
+        self.etabs.frame_obj.assign_frame_modifiers(
+            frame_names=beams + columns,
+            i22=1,
+            i33=1,
+        )
+        print("Set Slab stiffness modifiers ...")
+        self.assign_slab_modifiers(m11=1, m22=1, m12=1, reset=True)
+        print("Set floor cracking for beams and floors ...")
+        self.etabs.database.set_floor_cracking(type_='Frame')
+        self.etabs.database.set_floor_cracking(type_='Area')
+        # calculate rho and lambda
+        _, rho = calculate_rho(s, d, tw, hc, as_top, as_bot, fill=False, two_way=two_way)
+        landa = 2 / (1 + 50 * rho)
+        text += f'lambda = 2 / (1 + 50 x rho) = 2 / (1 + 50 x {rho:.4f}) = {landa:.2f}'
+        print(f'\n{rho=}\n{landa=}')
+        print("Create nonlinear load cases ...")
+        lc1, lc2, lc3 = self.etabs.database.create_nonlinear_loadcases(
+            dead=dead,
+            supper_dead=supper_dead,
+            lives=lives,
+            lives_percentage=lives_percentage,
+            )
+        print("Create deflection load combinations ...")
+        self.SapModel.RespCombo.Add('deflection1', 0)
+        self.SapModel.RespCombo.SetCaseList('deflection1', 0, lc2, 1)
+        self.SapModel.RespCombo.SetCaseList('deflection1', 0, lc1, -1)
+        self.SapModel.RespCombo.Add('deflection2', 0)
+        self.SapModel.RespCombo.SetCaseList('deflection2', 0, lc2, 1)
+        self.SapModel.RespCombo.SetCaseList('deflection2', 0, lc1, landa - 1)
+        if supper_dead:
+            # scale factor set to 0.5 due to xi for 3 month equal to 1.0
+            self.SapModel.RespCombo.SetCaseList('deflection2', 0, lc3, -0.5)
+            self.etabs.analyze.set_load_cases_to_analyze((lc1, lc2, lc3))
+        else:
+            self.etabs.analyze.set_load_cases_to_analyze((lc1, lc2))
+        self.etabs.run_analysis()
+        return text
+    
+    def get_mesh_results(self,
+                         slabs: list,
+                         case_name: str='deflection1',
+                         type_: str='Combo'
+                         ) -> dict:
+        '''
+        returns mesh result suitable for show in FreeCAD
+        '''
+    
+        map_dict = self.etabs.database.get_map_mesh_points()
+        mesh_joint = self.etabs.database.area_mesh_joints(slabs, ['Floor'], map_dict=map_dict)
+        points = self.etabs.points.get_objects_and_elements_joints_coordinate(map_dict=map_dict, joints=list(mesh_joint[2]))
+        disps = self.etabs.results.get_points_displacement(list(mesh_joint[2]), lp_name=case_name, type_=type_, item_type_elm=1, map_dict=map_dict)
+        results = [{'time': 1, 'disp': disps}]
+
+        el3 = {}
+        if len(mesh_joint[0]) > 0:
+            for value in mesh_joint[0].values():
+                el3.update(value)
+        el4 = {}
+        if len(mesh_joint[1]) > 0:
+            for value in mesh_joint[1].values():
+                el4.update(value)
+        m = {
+            "Nodes": points,
+            "Seg2Elem": {},
+            "Seg3Elem": {},
+            "Tria3Elem": el3,
+            "Tria6Elem": {},
+            "Quad4Elem": el4,
+            "Quad8Elem": {},
+            "Tetra4Elem": {},
+            "Tetra10Elem": {},
+            "Hexa8Elem": {},
+            "Hexa20Elem": {},
+            "Penta6Elem": {},
+            "Penta15Elem": {},
+            "Results": results
+            }
+        return m
+    
+    def delete_areas(self,
+                      areas: Union[list, None]=None,
+                      ) -> None:
+        if areas is None:
+            self.SapModel.AreaObj.Delete('ALL', ItemType=1) # Group
+        else:
+            for area in areas:
+                self.SapModel.AreaObj.Delete(area)
 
 def deck_plate_equivalent_height_according_to_volume(
         s,
@@ -516,7 +805,52 @@ def calculate_equivalent_height_according_to_volume(
     hw = (d - hc)
     equal_height = d - (s1 - tw1) * (s2 - tw2) * hw / (s1 * s2)
     return equal_height
-    
+
+def calculate_rho(
+        s: float,
+        d: float,
+        tw: float,
+        hc: float,
+        as_top: float,
+        as_bot: float,
+        fill: bool=False,
+        two_way: bool=True,
+    ) -> tuple:
+    '''
+    s: Spacing of Ribs that are Parallel to Slab 1-Axis
+    d: Overall Depth
+    tw: Average Stem Width
+    hc: Slab Thickness
+    as_top: Area of top rebars
+    as_bot: Area of bottom rebars
+    fill: calculate rho according to fill slab or not
+    return the (rho_top, rho_bot)
+    '''
+    if fill:
+        h = d
+    else:
+        if two_way:
+            h = calculate_equivalent_height_according_to_volume(
+                s,
+                s,
+                d,
+                tw,
+                tw,
+                hc,
+            )
+        else:
+            h = calculate_equivalent_height_according_to_volume(
+                s,
+                1,
+                d,
+                tw,
+                0,
+                hc,
+            )
+    rho_top = as_top / (s * h)
+    rho_bot = as_bot / (s * h)
+    return rho_top, rho_bot
+
 
 if __name__ == '__main__':
     import sys

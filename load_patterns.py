@@ -15,6 +15,8 @@ class LoadPatterns:
             8 : 'Other',
             11 : 'ROOF Live',
             12 : 'Notional',
+            37: 'Seismic (Drift)',
+            61: 'QuakeDrift',
         }
 
     map_pattern_to_number = {
@@ -30,6 +32,8 @@ class LoadPatterns:
             'MASS' : 8,
             'ROOF Live' : 11,
             'Notional' : 12,
+            'Seismic (Drift)' : 37,
+            'QuakeDrift' : 61,
         }
 
     def __init__(
@@ -44,7 +48,8 @@ class LoadPatterns:
             self.SapModel = SapModel
 
     def get_load_patterns(self):
-        return self.SapModel.LoadPatterns.GetNameList(0, [])[1]
+        all_load_patterns = self.SapModel.LoadPatterns.GetNameList()[1]
+        return [text for text in all_load_patterns if not text.startswith('~')]
 
     def get_special_load_pattern_names(self, n=5):
         '''
@@ -60,28 +65,30 @@ class LoadPatterns:
         
     def get_drift_load_pattern_names(self):
         '''
-        Drift loadType number is 37, when user ticks the eccentricity of load,
-        etabs creates additional (1/3), (2/3), and (3/3) load when structure is analyzed
+        Drift loadType number is 37 in etabs v19 and 61 in etabs v20
         '''
-        return self.get_special_load_pattern_names(37)
+        return self.get_special_load_pattern_names(self.etabs.seismic_drift_load_type)
 
     def get_load_patterns_in_XYdirection(self, only_ecc=False):
         '''
         return list of load pattern names, x and y direction separately
         '''
         self.select_all_load_patterns()
-        TableKey = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
-        [_, _, FieldsKeysIncluded, _, TableData, _] = self.etabs.database.read_table(TableKey)
-        i_xdir = FieldsKeysIncluded.index('XDir')
-        i_xdir_plus = FieldsKeysIncluded.index('XDirPlusE')
-        i_xdir_minus = FieldsKeysIncluded.index('XDirMinusE')
-        i_ydir = FieldsKeysIncluded.index('YDir')
-        i_ydir_plus = FieldsKeysIncluded.index('YDirPlusE')
-        i_ydir_minus = FieldsKeysIncluded.index('YDirMinusE')
-        i_name = FieldsKeysIncluded.index('Name')
-        data = self.etabs.database.reshape_data(FieldsKeysIncluded, TableData)
         names_x = set()
         names_y = set()
+        table_key = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
+        ret = self.etabs.database.read_table(table_key)
+        if ret is None:
+            return names_x, names_y
+        [_, _, fields, _, data, _] = ret
+        i_xdir = fields.index('XDir')
+        i_xdir_plus = fields.index('XDirPlusE')
+        i_xdir_minus = fields.index('XDirMinusE')
+        i_ydir = fields.index('YDir')
+        i_ydir_plus = fields.index('YDirPlusE')
+        i_ydir_minus = fields.index('YDirMinusE')
+        i_name = fields.index('Name')
+        data = self.etabs.database.reshape_data(fields, data)
         for earthquake in data:
             name = earthquake[i_name]
             if only_ecc:
@@ -110,68 +117,89 @@ class LoadPatterns:
             
         return names_x, names_y
 
-    def get_seismic_load_patterns(self):
+    def get_seismic_load_patterns(self,
+                                  drifts: bool=False,
+                                  ):
         '''
         return lists of load pattern names, x, +x, -x, y, +y and -y separately
         '''
         self.select_all_load_patterns()
-        TableKey = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
-        [_, _, FieldsKeysIncluded, _, TableData, _] = self.etabs.database.read_table(TableKey)
-        i_xdir = FieldsKeysIncluded.index('XDir')
-        i_xdir_plus = FieldsKeysIncluded.index('XDirPlusE')
-        i_xdir_minus = FieldsKeysIncluded.index('XDirMinusE')
-        i_ydir = FieldsKeysIncluded.index('YDir')
-        i_ydir_plus = FieldsKeysIncluded.index('YDirPlusE')
-        i_ydir_minus = FieldsKeysIncluded.index('YDirMinusE')
-        i_name = FieldsKeysIncluded.index('Name')
-        data = self.etabs.database.reshape_data(FieldsKeysIncluded, TableData)
-        drift_lp_names = self.get_drift_load_pattern_names()
         xdir = set()
         xdir_plus = set()
         xdir_minus = set()
         ydir = set()
         ydir_plus = set()
         ydir_minus = set()
-        for earthquake in data:
-            name = earthquake[i_name]
-            if name in drift_lp_names:
-                continue
-            if all((
-                earthquake[i_xdir] == 'Yes',
-                earthquake[i_xdir_minus] == 'No',
-                earthquake[i_xdir_plus] == 'No',
-                )):
-                xdir.add(name)
-            elif all((
-                earthquake[i_xdir] == 'No',
-                earthquake[i_xdir_minus] == 'Yes',
-                earthquake[i_xdir_plus] == 'No',
-                )):
-                xdir_minus.add(name)
-            elif all((
-                earthquake[i_xdir] == 'No',
-                earthquake[i_xdir_minus] == 'No',
-                earthquake[i_xdir_plus] == 'Yes',
-                )):
-                xdir_plus.add(name)
-            elif all((
-                earthquake[i_ydir] == 'Yes',
-                earthquake[i_ydir_minus] == 'No',
-                earthquake[i_ydir_plus] == 'No',
-                )):
-                ydir.add(name)
-            elif all((
-                earthquake[i_ydir] == 'No',
-                earthquake[i_ydir_minus] == 'Yes',
-                earthquake[i_ydir_plus] == 'No',
-                )):
-                ydir_minus.add(name)
-            elif all((
-                earthquake[i_ydir] == 'No',
-                earthquake[i_ydir_minus] == 'No',
-                earthquake[i_ydir_plus] == 'Yes',
-                )):
-                ydir_plus.add(name)
+        table_key = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
+        ret = self.etabs.database.read_table(table_key)
+        if ret is not None:
+            [_, _, FieldsKeysIncluded, _, TableData, _] = ret
+            i_xdir = FieldsKeysIncluded.index('XDir')
+            i_xdir_plus = FieldsKeysIncluded.index('XDirPlusE')
+            i_xdir_minus = FieldsKeysIncluded.index('XDirMinusE')
+            i_ydir = FieldsKeysIncluded.index('YDir')
+            i_ydir_plus = FieldsKeysIncluded.index('YDirPlusE')
+            i_ydir_minus = FieldsKeysIncluded.index('YDirMinusE')
+            i_name = FieldsKeysIncluded.index('Name')
+            data = self.etabs.database.reshape_data(FieldsKeysIncluded, TableData)
+            drift_lp_names = self.get_drift_load_pattern_names()
+            for earthquake in data:
+                name = earthquake[i_name]
+                if (drifts and name in drift_lp_names) or (not drifts and name not in drift_lp_names):
+                    if all((
+                        earthquake[i_xdir] == 'Yes',
+                        earthquake[i_xdir_minus] == 'No',
+                        earthquake[i_xdir_plus] == 'No',
+                        earthquake[i_ydir] == 'No',
+                        earthquake[i_ydir_minus] == 'No',
+                        earthquake[i_ydir_plus] == 'No',
+                        )):
+                        xdir.add(name)
+                    elif all((
+                        earthquake[i_xdir] == 'No',
+                        earthquake[i_xdir_minus] == 'Yes',
+                        earthquake[i_xdir_plus] == 'No',
+                        earthquake[i_ydir] == 'No',
+                        earthquake[i_ydir_minus] == 'No',
+                        earthquake[i_ydir_plus] == 'No',
+                        )):
+                        xdir_minus.add(name)
+                    elif all((
+                        earthquake[i_xdir] == 'No',
+                        earthquake[i_xdir_minus] == 'No',
+                        earthquake[i_xdir_plus] == 'Yes',
+                        earthquake[i_ydir] == 'No',
+                        earthquake[i_ydir_minus] == 'No',
+                        earthquake[i_ydir_plus] == 'No',
+                        )):
+                        xdir_plus.add(name)
+                    elif all((
+                        earthquake[i_xdir] == 'No',
+                        earthquake[i_xdir_minus] == 'No',
+                        earthquake[i_xdir_plus] == 'No',
+                        earthquake[i_ydir] == 'Yes',
+                        earthquake[i_ydir_minus] == 'No',
+                        earthquake[i_ydir_plus] == 'No',
+                        )):
+                        ydir.add(name)
+                    elif all((
+                        earthquake[i_xdir] == 'No',
+                        earthquake[i_xdir_minus] == 'No',
+                        earthquake[i_xdir_plus] == 'No',
+                        earthquake[i_ydir] == 'No',
+                        earthquake[i_ydir_minus] == 'Yes',
+                        earthquake[i_ydir_plus] == 'No',
+                        )):
+                        ydir_minus.add(name)
+                    elif all((
+                        earthquake[i_xdir] == 'No',
+                        earthquake[i_xdir_minus] == 'No',
+                        earthquake[i_xdir_plus] == 'No',
+                        earthquake[i_ydir] == 'No',
+                        earthquake[i_ydir_minus] == 'No',
+                        earthquake[i_ydir_plus] == 'Yes',
+                        )):
+                        ydir_plus.add(name)
         return xdir, xdir_minus, xdir_plus, ydir, ydir_minus, ydir_plus
 
     def get_EX_EY_load_pattern(self):
@@ -234,24 +262,39 @@ class LoadPatterns:
                 elif direction == 'U2':
                     y_names.append(name)
         return x_names, y_names
+    
+    def get_all_seismic_load_patterns(self):
+        '''
+        returns a list of seismic load pattern names in seismic table
+        '''
+        ret = set()
+        table_key = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
+        df = self.etabs.database.read(table_key, to_dataframe=True)
+        if df is not None:
+            ret = set(df.Name.unique())
+        return ret
 
     def get_ex_ey_earthquake_name(self):
-        x_names, y_names = self.get_load_patterns_in_XYdirection()
-        x_names = sorted(x_names)
-        y_names = sorted(y_names)
-        x_name = None
-        y_name = None
-        drift_load_patterns = self.get_drift_load_pattern_names()
-        for name in x_names:
-            if name not in drift_load_patterns:
-                x_name = name
-                break
-        for name in y_names:
-            if name not in drift_load_patterns:
-                y_name = name
-                break
+        ret = self.get_seismic_load_patterns()
+        x_name = ret[0].pop()
+        y_name = ret[3].pop()
         return x_name, y_name
-
+    
+    def get_earthquake_values(self, names: list,
+                              ):
+        '''
+        Return the list contain earthquake factors
+        '''
+        table_key = 'Load Pattern Definitions - Auto Seismic - User Coefficient'
+        df = self.etabs.database.read(table_key, to_dataframe=True)
+        df = df.dropna(subset=['C'])
+        c = []
+        for name in names:
+            if name in df.Name.unique():
+                ser = df[df['Name'] == name]['C']
+                c.append(float(ser.values))
+        return c
+    
     def get_expanded_seismic_load_patterns(self) -> tuple:
         '''
         get all seismic loads that have multiple eccentricity in definitions like EXALL, EYALL
@@ -277,7 +320,7 @@ class LoadPatterns:
         for col in cols:
             df[col] = df[col].map(d)
         filt_multi = (df[cols.keys()].sum(axis=1) > 1)
-        if not True in filt_multi.values:
+        if True not in filt_multi.values:
             return None
         converted_loads = dict.fromkeys(df['Name'].unique())
         converted_loads_type = dict()
@@ -285,7 +328,7 @@ class LoadPatterns:
         new_rows = []
         for _, row in df.iterrows():
             name = row['Name']
-            load_type = 37 if name in drift_load_names else 5
+            load_type = self.etabs.seismic_drift_load_type if name in drift_load_names else 5
             if row['XDir'] in (0, 1):
                 row_dirs=row[cols.keys()]
             
@@ -335,6 +378,10 @@ class LoadPatterns:
             return False
         for name in names:
             self.SapModel.LoadPatterns.Add(name, type_)
+            self.SapModel.LoadCases.StaticLinear.SetCase(name)
+            self.SapModel.LoadCases.StaticLinear.SetLoads(
+                name, 1, ('Load',), (name,), (1.0,))
+
         return True
     
     def add_notional_loads(self,
@@ -346,7 +393,7 @@ class LoadPatterns:
         self.etabs.load_patterns.add_load_patterns(notional_loads, 'Notional')
         table_key = "Load Pattern Definitions - Auto Notional Loads"
         df = self.etabs.database.read(table_key, to_dataframe=True)
-        cols = ['Load Pattern', 'Base Load Pattern', 'Load Ratio', 'Load Direction']
+        cols = self.etabs.auto_notional_loads_columns
         df2 = []
         for load in loads:
             df2.extend([[f'N{load}X', load, '.002', 'X'], [f'N{load}Y', load, '.002', 'Y']])

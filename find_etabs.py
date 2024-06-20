@@ -1,6 +1,6 @@
 from pathlib import Path
 
-#from PySide2.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
 #import FreeCAD
 #if FreeCAD.GuiUp:
@@ -12,7 +12,7 @@ import etabs_obj
 def open_browse(
         ext: str = '.EDB',
         ):
-    from PySide2.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QFileDialog
     filters = f"{ext[1:]} (*{ext})"
     filename, _ = QFileDialog.getOpenFileName(None, 'select file',
                                             None, filters)

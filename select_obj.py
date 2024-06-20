@@ -14,7 +14,7 @@ class SelectObj:
 
     def get_selected_obj_type(self,
             n : int,
-            ) :
+            ) -> list:
         '''
         n: 
             1 = points
@@ -52,5 +52,16 @@ class SelectObj:
                 selected_objects[t] = []
             selected_objects[t].append(name)
         return selected_objects
+    
+    def select_concrete_columns(self):
+        _, columns = self.etabs.frame_obj.get_beams_columns(type_=2)
+        for name in columns:
+            self.SapModel.FrameObj.SetSelected(name, True)
+
+    def get_selected_floors(self):
+        all_selected_areas = self.get_selected_obj_type(n=5)
+        all_floors = self.etabs.area.get_names_of_areas_of_type(type_='floor')
+        selected_floors = set(all_selected_areas).intersection(all_floors)
+        return selected_floors
 
     

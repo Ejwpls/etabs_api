@@ -79,5 +79,3 @@ class PropFrame:
             ret = self.SapModel.PropFrame.GetRebarColumn(sec)
             ret[-2] = design
             self.SapModel.PropFrame.SetRebarColumn(sec, *ret[:-1])
-
-
